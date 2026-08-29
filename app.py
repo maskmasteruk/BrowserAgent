@@ -971,14 +971,6 @@ def generate_agent_plan(
             response_format={"type": "json_object"},
         )
 
-        print(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            "\n"*5
-        )
-
         response_content = completion.choices[0].message.content
         parsed = extract_json(response_content)
         return AgentPlan.model_validate(parsed)
