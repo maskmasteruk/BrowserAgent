@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Interaction JSON Analyzer</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --panel-bg: #1e293b;
+            --border-color: #334155;
+            --text-color: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-color: #3b82f6;
+            --accent-hover: #2563eb;
+            --success-color: #22c55e;
+            --warning-color: #eab308;
+            --error-color: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: var(--panel-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            flex: 1;
+            overflow: hidden;
+            height: calc(100vh - 65px);
+        }
+
+        .sidebar {
+            background-color: var(--panel-bg);
+            border-right: 1px solid var(--border-color);
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            overflow-y: auto;
+        }
+
+        .drop-zone {
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+            padding: 2rem 1rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: var(--accent-color);
+            background-color: rgba(59, 130, 246, 0.05);
+        }
+
+        .drop-zone input {
+            display: none;
+        }
+
+        .meta-card {
+            background-color: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            font-size: 0.875rem;
+        }
+
+        .meta-item {
+            margin-bottom: 0.5rem;
+        }
+
+        .meta-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .meta-label {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-actions_ready { background-color: rgba(34, 197, 94, 0.2); color: var(--success-color); }
+        .badge-screenshot_required { background-color: rgba(234, 179, 8, 0.2); color: var(--warning-color); }
+        .badge-user_input_required { background-color: rgba(234, 179, 8, 0.2); color: var(--warning-color); }
+        .badge-error { background-color: rgba(239, 68, 68, 0.2); color: var(--error-color); }
+
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .tabs {
+            display: flex;
+            background-color: var(--panel-bg);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-color);
+        }
+
+        .tab-btn.active {
+            color: var(--accent-color);
+            border-bottom-color: var(--accent-color);
+        }
+
+        .tab-content {
+            display: none;
+            padding: 1.5rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        pre {
+            background-color: #090d16;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            color: #e2e8f0;
+        }
+
+        .action-card {
+            background-color: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .action-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .action-type {
+            font-weight: 600;
+            color: var(--accent-color);
+            text-transform: uppercase;
+        }
+
+        .empty-state {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Agent Interaction JSON Analyzer</h1>
+    <div id="file-name" style="color: var(--text-muted); font-size: 0.875rem;">No file loaded</div>
+</header>
+
+<div class="container">
+    <div class="sidebar">
+        <div class="drop-zone" id="drop-zone">
+            <p>Drag & Drop JSON file here</p>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">or click to browse</p>
+            <input type="file" id="file-input" accept=".json">
+        </div>
+
+        <div class="meta-card" id="meta-card" style="display: none;">
+            <div class="meta-item">
+                <div class="meta-label">Status</div>
+                <div id="status-badge" class="badge">N/A</div>
+            </div>
+            <div class="meta-item" style="margin-top: 0.75rem;">
+                <div class="meta-label">Request ID</div>
+                <div id="meta-request-id" style="word-break: break-all;">-</div>
+            </div>
+            <div class="meta-item" style="margin-top: 0.75rem;">
+                <div class="meta-label">Timestamp</div>
+                <div id="meta-timestamp">-</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn" onclick="switchTab('actions')">Actions</button>
+            <button class="tab-btn" onclick="switchTab('dom')">DOM Context</button>
+            <button class="tab-btn" onclick="switchTab('system-prompt')">System Prompt</button>
+            <button class="tab-btn" onclick="switchTab('raw')">Raw JSON</button>
+        </div>
+
+        <div id="tab-overview" class="tab-content active">
+            <div class="empty-state">Upload an interaction JSON file to analyze details</div>
+        </div>
+
+        <div id="tab-actions" class="tab-content">
+            <div class="empty-state">No actions available</div>
+        </div>
+
+        <div id="tab-dom" class="tab-content">
+            <div class="empty-state">No DOM context available</div>
+        </div>
+
+        <div id="tab-system-prompt" class="tab-content">
+            <div class="empty-state">No system prompt available</div>
+        </div>
+
+        <div id="tab-raw" class="tab-content">
+            <div class="empty-state">No raw data loaded</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let currentData = null;
+
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('dragover');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) {
+            handleFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) {
+            handleFile(e.target.files[0]);
+        }
+    });
+
+    function handleFile(file) {
+        document.getElementById('file-name').innerText = file.name;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                currentData = JSON.parse(e.target.result);
+                renderData(currentData);
+            } catch (err) {
+                alert('Invalid JSON file: ' + err.message);
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    function switchTab(tabName) {
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+        event.target.classList.add('active');
+        document.getElementById(`tab-${tabName}`).classList.add('active');
+    }
+
+    function renderData(data) {
+        // Sidebar Metadata
+        document.getElementById('meta-card').style.display = 'block';
+        document.getElementById('meta-request-id').innerText = data.request_id || 'N/A';
+        document.getElementById('meta-timestamp').innerText = data.timestamp ? new Date(data.timestamp).toLocaleString() : 'N/A';
+
+        const status = data.agent_response?.status || 'unknown';
+        const badge = document.getElementById('status-badge');
+        badge.innerText = status;
+        badge.className = `badge badge-${status}`;
+
+        // Overview Tab
+        const overviewHtml = `
+                <div class="action-card">
+                    <div class="meta-label">User Query</div>
+                    <p style="margin-top: 0.5rem; font-size: 1.1rem; color: #fff;">${escapeHtml(data.input_payload?.user_query || 'N/A')}</p>
+                </div>
+                <div class="action-card">
+                    <div class="meta-label">Agent Response Message</div>
+                    <p style="margin-top: 0.5rem; color: #e2e8f0;">${escapeHtml(data.agent_response?.message || 'None')}</p>
+                </div>
+                <div class="action-card">
+                    <div class="meta-label">Reasoning Summary</div>
+                    <p style="margin-top: 0.5rem; color: #cbd5e1; font-family: monospace;">${escapeHtml(data.agent_response?.reasoning_summary || 'N/A')}</p>
+                </div>
+            `;
+        document.getElementById('tab-overview').innerHTML = overviewHtml;
+
+        // Actions Tab
+        const actions = data.agent_response?.actions || [];
+        if (actions.length === 0) {
+            document.getElementById('tab-actions').innerHTML = '<div class="empty-state">No actions executed in this step.</div>';
+        } else {
+            const actionsHtml = actions.map((act, idx) => `
+                    <div class="action-card">
+                        <div class="action-header">
+                            <span class="action-type">#${idx + 1} - ${act.type}</span>
+                            ${act.confidence ? `<span style="font-size: 0.75rem; color: var(--text-muted);">Confidence: ${(act.confidence * 100).toFixed(0)}%</span>` : ''}
+                        </div>
+                        <pre>${escapeHtml(JSON.stringify(act, null, 2))}</pre>
+                    </div>
+                `).join('');
+            document.getElementById('tab-actions').innerHTML = actionsHtml;
+        }
+
+        // DOM Context Tab
+        const domElements = data.input_payload?.browser_dom?.elements || [];
+        document.getElementById('tab-dom').innerHTML = `<pre>${escapeHtml(JSON.stringify(domElements, null, 2))}</pre>`;
+
+        // System Prompt Tab
+        document.getElementById('tab-system-prompt').innerHTML = `<pre>${escapeHtml(data.system_prompt || 'N/A')}</pre>`;
+
+        // Raw JSON Tab
+        document.getElementById('tab-raw').innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+    }
+
+    function escapeHtml(str) {
+        if (typeof str !== 'string') return str;
+        return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+</script>
+</body>
+</html>

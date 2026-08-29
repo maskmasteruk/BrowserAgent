@@ -734,6 +734,33 @@ When the user asks you to solve or complete something, autonomously determine th
 
 """
 
+def save_agent_interaction(
+        request_id: str,
+        payload: Dict[str, Any],
+        plan_or_response: Dict[str, Any],
+        log_dir: str = "logs",
+) -> None:
+    """Saves the system prompt, payload, and generated response into a JSON file."""
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
+
+    file_name = log_path / f"agent_interaction_{request_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    data_to_save = {
+        "timestamp": datetime.now().isoformat(),
+        "request_id": request_id,
+        "system_prompt": SYSTEM_PROMPT,
+        "input_payload": payload,
+        "agent_response": plan_or_response,
+    }
+
+    try:
+        with open(file_name, "w", encoding="utf-8") as f:
+            json.dump(data_to_save, f, indent=4, ensure_ascii=False)
+        print(f"Interaction logged successfully: {file_name}")
+    except Exception as e:
+        print(f"Failed to log interaction: {e}")
+
 def prepare_element(element: DOMElement) -> Dict[str, Any]:
     raw_result = {
         "id": element.id,
@@ -1067,18 +1094,7 @@ def run_agent(request: AgentRequest):
             request=request,
         )
 
-        print(
-            AgentResponse(
-                request_id=request_id,
-                status=validated_plan.status,
-                message=validated_plan.message,
-                reasoning_summary=validated_plan.reasoning_summary,
-                actions=validated_plan.actions,
-                error=None,
-            )
-        )
-
-        return AgentResponse(
+        response = AgentResponse(
             request_id=request_id,
             status=validated_plan.status,
             message=validated_plan.message,
@@ -1087,23 +1103,45 @@ def run_agent(request: AgentRequest):
             error=None,
         )
 
+        # Reconstruct the exact payload sent to the model for full audit trace
+        payload = {
+            "user_query": request.query,
+            "browser_dom": browser_context,
+            "available_secrets": [s.model_dump() for s in request.available_secrets],
+            "user_inputs": [u.model_dump() for u in request.user_inputs],
+            "previous_messages": [m.model_dump() for m in request.previous_messages],
+        }
+
+        # Log request prompt and response to JSON
+        save_agent_interaction(
+            request_id=request_id,
+            payload=payload,
+            plan_or_response=response.model_dump(),
+        )
+
+        return response
+
     except ValidationError as error:
-        return AgentResponse(
+        err_response = AgentResponse(
             request_id=request_id,
             status="error",
             reasoning_summary="Model output failed Pydantic validation.",
             actions=[],
             error=str(error),
         )
+        save_agent_interaction(request_id, {"query": request.query}, err_response.model_dump())
+        return err_response
 
     except Exception as error:
-        return AgentResponse(
+        err_response = AgentResponse(
             request_id=request_id,
             status="error",
             reasoning_summary="Agent processing failed.",
             actions=[],
             error=str(error),
         )
+        save_agent_interaction(request_id, {"query": request.query}, err_response.model_dump())
+        return err_response
 
 
 @app.get("/health")
