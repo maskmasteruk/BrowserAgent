@@ -933,6 +933,69 @@ def extract_json(text: str) -> Dict[str, Any]:
     raise ValueError("Model did not return valid JSON")
 
 
+def is_groq_request_too_large_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code == 413:
+        return True
+
+    message = str(error).lower()
+    return (
+        "request too large" in message
+        or "tokens per minute" in message
+        or "tpm" in message
+    )
+
+
+def remove_dom_elements(payload: Dict[str, Any]) -> Dict[str, Any]:
+    reduced_payload = dict(payload)
+    browser_dom = dict(reduced_payload.get("browser_dom") or {})
+    browser_dom["elements"] = []
+    reduced_payload["browser_dom"] = browser_dom
+    return reduced_payload
+
+
+def call_groq_agent_plan(
+        payload: Dict[str, Any],
+        images: Optional[List[Dict[str, str]]] = None,
+) -> AgentPlan:
+    if images:
+        content = [
+            {
+                "type": "text",
+                "text": json.dumps(payload, ensure_ascii=False),
+            }
+        ]
+
+        for img in images:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{img['mime_type']};base64,{img['base64']}"
+                    },
+                }
+            )
+
+        model = GROQ_WITH_IMAGE_MODEL
+    else:
+        content = json.dumps(payload, ensure_ascii=False)
+        model = GROQ_MODEL
+
+    completion = groq_client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": content},
+        ],
+        temperature=0.05,
+        response_format={"type": "json_object"},
+    )
+
+    response_content = completion.choices[0].message.content
+    parsed = extract_json(response_content)
+    return AgentPlan.model_validate(parsed)
+
+
 def ask_model(
         request: AgentRequest,
         browser_context: Dict[str, Any],
@@ -989,45 +1052,26 @@ def generate_agent_plan(
 ) -> AgentPlan:
 
     try:
-        if images:
-            content = [
-                {
-                    "type": "text",
-                    "text": json.dumps(payload, ensure_ascii=False),
-                }
-            ]
-
-            for img in images:
-                content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{img['mime_type']};base64,{img['base64']}"
-                        },
-                    }
-                )
-
-            model = GROQ_WITH_IMAGE_MODEL
-        else:
-            content = json.dumps(payload, ensure_ascii=False)
-            model = GROQ_MODEL
-
-        completion = groq_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            temperature=0.05,
-            response_format={"type": "json_object"},
+        return call_groq_agent_plan(
+            payload=payload,
+            images=images,
         )
-
-        response_content = completion.choices[0].message.content
-        parsed = extract_json(response_content)
-        return AgentPlan.model_validate(parsed)
 
     except Exception as e:
         print("Groq Exception:", e)
+
+        if is_groq_request_too_large_error(e):
+            if not images:
+                raise
+
+            reduced_payload = remove_dom_elements(payload)
+            print(
+                "Groq request was too large; retrying with screenshot and DOM elements removed."
+            )
+            return call_groq_agent_plan(
+                payload=reduced_payload,
+                images=images,
+            )
 
         ollama_message = {
             "role": "user",
