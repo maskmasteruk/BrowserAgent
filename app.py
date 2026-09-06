@@ -106,21 +106,30 @@ class AgentRequest(BaseModel):
 
 class ClickAction(BaseModel):
     type: Literal["click"]
-    element_id: str
+    element_id: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    x: Optional[float] = Field(default=None, ge=0.0)
+    y: Optional[float] = Field(default=None, ge=0.0)
+    coordinate_system: Literal["screenshot", "viewport"] = "screenshot"
     confidence: float = Field(ge=0.0, le=1.0)
     reason: Optional[str] = None
 
 
 class MoveAction(BaseModel):
     type: Literal["move"]
-    element_id: str
+    element_id: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    x: Optional[float] = Field(default=None, ge=0.0)
+    y: Optional[float] = Field(default=None, ge=0.0)
+    coordinate_system: Literal["screenshot", "viewport"] = "screenshot"
     confidence: float = Field(ge=0.0, le=1.0)
     reason: Optional[str] = None
 
 
 class TypeTextAction(BaseModel):
     type: Literal["type_text"]
-    element_id: str
+    element_id: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    x: Optional[float] = Field(default=None, ge=0.0)
+    y: Optional[float] = Field(default=None, ge=0.0)
+    coordinate_system: Literal["screenshot", "viewport"] = "screenshot"
     text: str = Field(max_length=5000)
     confidence: float = Field(ge=0.0, le=1.0)
     reason: Optional[str] = None
@@ -243,6 +252,7 @@ You receive:
 4. Optional non-secret user inputs.
 5. Previous response messages:
    A chronological log of messages you previously returned to the user in this workflow session.
+6. Optional screenshot metadata and screenshot image.
 
 ==================================================
 CORE AUTONOMOUS BEHAVIOR
@@ -548,6 +558,48 @@ Prefer DOM information.
 
 Do NOT request a screenshot if the DOM already provides enough information to complete the task.
 
+If a screenshot is already provided and the DOM has no usable element ID for a
+visually identifiable target, do NOT invent an element ID and do NOT request the
+same screenshot again. Return `actions_ready` with a coordinate-targeted action.
+
+Coordinate-targeted actions are allowed for:
+
+- `click`
+- `move`
+- `type_text`
+
+For coordinate-targeted actions:
+
+- Omit `element_id` or set it to null.
+- Include `x` and `y`.
+- Set `coordinate_system` to `"screenshot"`.
+- Measure `x` and `y` in pixels from the top-left corner of the current visible
+  screenshot image.
+- Target the center of the visible control, text field, answer option, button,
+  link, or other actionable region.
+- Use coordinates only when the target is clear from the screenshot.
+
+Examples:
+
+{
+    "type": "click",
+    "x": 412,
+    "y": 275,
+    "coordinate_system": "screenshot",
+    "confidence": 0.82,
+    "reason": "The target button is visible in the screenshot but has no DOM element ID."
+}
+
+{
+    "type": "type_text",
+    "x": 310,
+    "y": 428,
+    "coordinate_system": "screenshot",
+    "text": "Generated answer",
+    "confidence": 0.78,
+    "reason": "The visible text field has no DOM element ID, so the client should click this screenshot position and type."
+}
+
 If the DOM genuinely does not contain enough information to identify the target and visual information is necessary, return:
 
 {
@@ -601,7 +653,8 @@ Only use `element_id` values that actually exist in the provided DOM.
 
 NEVER invent an element ID.
 
-Before performing an action, verify that the target element exists in the current DOM.
+Before performing an element-targeted action, verify that the target element
+exists in the current DOM.
 
 Prefer the most semantically appropriate element.
 
@@ -615,6 +668,10 @@ For example:
 
 Do not use arbitrary elements when a semantically correct element exists.
 
+If no valid DOM element ID exists but a screenshot is available and the target is
+visually clear, use a coordinate-targeted `click`, `move`, or `type_text`
+instead of fabricating an ID.
+
 ==================================================
 ACTION TYPES
 ==================================================
@@ -627,10 +684,30 @@ Supported actions:
     "confidence": 0.95
 }
 
+or, when the current target is only identifiable from the screenshot:
+
+{
+    "type": "click",
+    "x": 412,
+    "y": 275,
+    "coordinate_system": "screenshot",
+    "confidence": 0.82
+}
+
 {
     "type": "move",
     "element_id": "...",
     "confidence": 0.95
+}
+
+or, when the current target is only identifiable from the screenshot:
+
+{
+    "type": "move",
+    "x": 412,
+    "y": 275,
+    "coordinate_system": "screenshot",
+    "confidence": 0.82
 }
 
 {
@@ -638,6 +715,17 @@ Supported actions:
     "element_id": "...",
     "text": "...",
     "confidence": 0.95
+}
+
+or, when the current text target is only identifiable from the screenshot:
+
+{
+    "type": "type_text",
+    "x": 310,
+    "y": 428,
+    "coordinate_system": "screenshot",
+    "text": "...",
+    "confidence": 0.78
 }
 
 {
@@ -670,6 +758,10 @@ ACTION PLANNING
 ==================================================
 
 When the current DOM contains everything necessary to perform the next step, return `actions_ready`.
+
+When a screenshot is available and it visually identifies the next clickable or
+typeable target but the DOM does not provide a valid element ID, return
+`actions_ready` with a coordinate-targeted action.
 
 Do not stop at analysis if an action can be performed.
 
@@ -859,7 +951,7 @@ def prepare_browser_context(browser: BrowserContext) -> Dict[str, Any]:
     }
 
 
-def normalize_base64_image(image_data: str) -> Optional[Dict[str, str]]:
+def normalize_base64_image(image_data: str) -> Optional[Dict[str, Any]]:
     if not image_data or not isinstance(image_data, str):
         return None
 
@@ -880,6 +972,13 @@ def normalize_base64_image(image_data: str) -> Optional[Dict[str, str]]:
         decoded_image = base64.b64decode(image_data, validate=True)
     except Exception as e:
         print("Invalid Base64 image:", e)
+        return None
+
+    try:
+        with Image.open(io.BytesIO(decoded_image)) as image:
+            image_width, image_height = image.size
+    except UnidentifiedImageError as e:
+        print("Invalid image data:", e)
         return None
 
     received_dir = Path("received")
@@ -910,6 +1009,8 @@ def normalize_base64_image(image_data: str) -> Optional[Dict[str, str]]:
     return {
         "base64": image_data,
         "mime_type": mime_type,
+        "width": image_width,
+        "height": image_height,
     }
 
 def extract_json(text: str) -> Dict[str, Any]:
@@ -956,7 +1057,7 @@ def remove_dom_elements(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def call_groq_agent_plan(
         payload: Dict[str, Any],
-        images: Optional[List[Dict[str, str]]] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
 ) -> AgentPlan:
     if images:
         content = [
@@ -1040,6 +1141,28 @@ def ask_model(
                 if normalized:
                     normalized_images.append(normalized)
 
+    if normalized_images:
+        payload["screenshot"] = {
+            "available": True,
+            "coordinate_system": "screenshot",
+            "description": (
+                "Coordinate actions use x/y pixels measured from the top-left "
+                "corner of the current visible screenshot."
+            ),
+            "images": [
+                {
+                    "width": img.get("width"),
+                    "height": img.get("height"),
+                    "mime_type": img.get("mime_type"),
+                }
+                for img in normalized_images
+            ],
+        }
+    else:
+        payload["screenshot"] = {
+            "available": False,
+        }
+
     return generate_agent_plan(
         payload=payload,
         images=normalized_images or None,
@@ -1048,7 +1171,7 @@ def ask_model(
 
 def generate_agent_plan(
         payload: dict,
-        images: Optional[List[Dict[str, str]]] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
 ) -> AgentPlan:
 
     try:
@@ -1099,9 +1222,61 @@ def generate_agent_plan(
         return AgentPlan.model_validate(parsed)
 
 
+def validate_element_target(
+        action: Union[ClickAction, MoveAction, TypeTextAction, TypeSecretAction],
+        element_map: Dict[str, DOMElement],
+) -> None:
+    element_id = action.element_id
+
+    if element_id not in element_map:
+        raise ValueError(f"Invalid element_id: {element_id}")
+
+    element = element_map[element_id]
+
+    if not element.visible:
+        raise ValueError(f"Invisible element: {element_id}")
+
+    if element.disabled:
+        raise ValueError(f"Disabled element: {element_id}")
+
+
+def validate_coordinate_target(
+        action: Union[ClickAction, MoveAction, TypeTextAction],
+        request: AgentRequest,
+        images: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    if action.x is None or action.y is None:
+        raise ValueError(
+            f"{action.type} requires either element_id or both x and y coordinates"
+        )
+
+    if action.coordinate_system == "screenshot":
+        if not images:
+            raise ValueError(
+                f"{action.type} with screenshot coordinates requires a screenshot"
+            )
+
+        width = images[0].get("width")
+        height = images[0].get("height")
+    else:
+        width = request.browser.viewport_width
+        height = request.browser.viewport_height
+
+    if width is not None and action.x > float(width):
+        raise ValueError(
+            f"{action.type} x coordinate {action.x} exceeds {action.coordinate_system} width {width}"
+        )
+
+    if height is not None and action.y > float(height):
+        raise ValueError(
+            f"{action.type} y coordinate {action.y} exceeds {action.coordinate_system} height {height}"
+        )
+
+
 def validate_plan(
         plan: AgentPlan,
         request: AgentRequest,
+        images: Optional[List[Dict[str, Any]]] = None,
 ) -> AgentPlan:
     element_map = {element.id: element for element in request.browser.elements}
     secret_map = {secret.key: secret for secret in request.available_secrets}
@@ -1110,22 +1285,15 @@ def validate_plan(
     user_input_requests = 0
 
     for action in plan.actions:
-        if isinstance(
-                action,
-                (ClickAction, MoveAction, TypeTextAction, TypeSecretAction),
-        ):
-            if action.element_id not in element_map:
-                raise ValueError(f"Invalid element_id: {action.element_id}")
-
-            element = element_map[action.element_id]
-
-            if not element.visible:
-                raise ValueError(f"Invisible element: {action.element_id}")
-
-            if element.disabled:
-                raise ValueError(f"Disabled element: {action.element_id}")
+        if isinstance(action, (ClickAction, MoveAction, TypeTextAction)):
+            if action.element_id is not None:
+                validate_element_target(action, element_map)
+            else:
+                validate_coordinate_target(action, request, images)
 
         if isinstance(action, TypeSecretAction):
+            validate_element_target(action, element_map)
+
             if action.secret_key not in secret_map:
                 raise ValueError(f"Invalid secret_key: {action.secret_key}")
 
@@ -1179,6 +1347,7 @@ def run_agent(request: AgentRequest):
         validated_plan = validate_plan(
             plan=plan,
             request=request,
+            images=image,
         )
 
         response = AgentResponse(
@@ -1197,6 +1366,22 @@ def run_agent(request: AgentRequest):
             "available_secrets": [s.model_dump() for s in request.available_secrets],
             "user_inputs": [u.model_dump() for u in request.user_inputs],
             "previous_messages": [m.model_dump() for m in request.previous_messages],
+            "screenshot": {
+                "available": bool(image),
+                "coordinate_system": "screenshot",
+                "description": (
+                    "Coordinate actions use x/y pixels measured from the top-left "
+                    "corner of the current visible screenshot."
+                ),
+                "images": [
+                    {
+                        "width": img.get("width"),
+                        "height": img.get("height"),
+                        "mime_type": img.get("mime_type"),
+                    }
+                    for img in image
+                ] if image else [],
+            },
         }
 
         # Log request prompt and response to JSON
